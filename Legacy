@@ -1,0 +1,45 @@
+Legacy – HackTheBox OSCP Style Vulnerable Machine
+
+Overview
+
+Legacy is a retired machine hosted on HackTheBox. It had a focus on using a very popular known CVE and is good enumeration practice for beginners.
+
+User Flag
+
+Start off with an initial scan using nmap. Here, we can see SMB services running.
+
+
+With this output, we can see a closed 3389, and open 139, 445. The first step would be trying to enumerate the SMB file shares and see what comes up. Since we don’t have a user name, we can start by trying to launch a null session with rpcclient.
+
+
+Without credentials, we are getting an NT_STATUS_ACCESS_DENIED so next move is to move on to smbmap.
+
+
+smbmap runs but doesn’t have output. We can confirm that the box is set up to keep quiet with a manual check with smbclient too.
+
+
+We can check to see if there are any ports we missed by running nmap with the -p- flags, but with only smb services expose, we need to dig deeper. Start by finding the map scripts which include smb enumeration.
+
+ls /usr/share/nmap/scripts | grep -i smb
+
+A list of scripts is displayed, so we can engage them with nmap.
+
+nmap -p 139,445 10.129.1.111 --script smb-vuln-*
+
+Now we can see that the service itself has a known CVE. We see it reports a vulnerability to ms17-010. After trying a module on Metasploit with no success, I take a look at what other vulnerabilities were reported.
+
+
+ms08-067 was also flagged down as a potential vulnerability.
+
+
+Since this is an easy box, Metasploit gives us root access. Grab the user flag under:
+
+C:\Documents and Settings\john\Desktop
+Root Flag
+
+We can grab the root flag under:
+
+C:\Documents and Settings\Administrator
+Further Resources
+
+ms08-067 article by rapid7
